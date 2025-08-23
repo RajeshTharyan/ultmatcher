@@ -1,0 +1,20 @@
+# Core
+streamlit==1.38.0
+pandas==2.2.2
+
+# Fuzzy matching
+rapidfuzz==3.10.1
+textdistance==4.6.2
+recordlinkage==0.16
+name-matching==0.6.3
+
+# Token-based methods
+scikit-learn==1.5.2
+
+# Phonetic methods
+phonetics==1.0.5
+
+# Semantic methods
+sentence-transformers==3.0.1
+torch==2.3.1
+transformers==4.44.2
