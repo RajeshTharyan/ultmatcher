@@ -2,7 +2,6 @@ streamlit>=1.39,<2
 pandas>=2.2,<3
 numpy>=2.0,<3        
 scikit-learn>=1.6
-Fuzzy matching
 rapidfuzz>=3.6
 textdistance>=4.6
 recordlinkage==0.16.0
