@@ -44,9 +44,13 @@ except Exception as e:  # pragma: no cover
     st_util = None
     _missing["sentence_transformers"] = f"{e}"
 
+import jellyfish
+
 st.set_page_config(page_title="Fuzzy Matcher", layout="wide")
 st.title("Fuzzy Dataset Matcher")
 st.markdown("By: **Prof. Rajesh Tharyan**")
+
+print("Missing dependencies:", _missing)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Utility helpers
@@ -111,10 +115,24 @@ def build_resources(using_keys: pd.Series, methods: List[str]) -> Resources:
         res.sbert_model = SentenceTransformer(res.sbert_model_name)
         res.using_embeddings = res.sbert_model.encode(list(using_keys.values), normalize_embeddings=True, show_progress_bar=False)
     # Phonetics
-    if ("soundex" in methods or "double_metaphone" in methods) and phonetics is not None:
-        res.using_soundex = using_keys.map(lambda x: phonetics.soundex(x))
-        res.using_dm_primary = using_keys.map(lambda x: phonetics.dmetaphone(x)[0] or "")
-        res.using_dm_secondary = using_keys.map(lambda x: phonetics.dmetaphone(x)[1] or "")
+    # Always use jellyfish for Soundex codes (more reliable)
+    if "soundex" in methods:
+        res.using_soundex = using_keys.map(lambda x: jellyfish.soundex(x) if x and len(x.strip()) > 0 else "")
+
+    # Double Metaphone still relies on phonetics package
+    if "double_metaphone" in methods and phonetics is not None:
+        def safe_dmetaphone(x):
+            try:
+                if x and len(x.strip()) > 0:
+                    result = phonetics.dmetaphone(x)
+                    return (result[0] or "", result[1] or "")
+                else:
+                    return ("", "")
+            except:
+                return ("", "")
+        dm_results = using_keys.map(safe_dmetaphone)
+        res.using_dm_primary = dm_results.map(lambda x: x[0])
+        res.using_dm_secondary = dm_results.map(lambda x: x[1])
     return res
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -149,8 +167,10 @@ def _best_match_jaccard_tokens(target: str, universe: pd.Series):
 
 def _best_match_trigram_overlap(target: str, universe: pd.Series, n: int = 3):
     def ngrams(s: str, n: int) -> set:
+        if len(s) < n:
+            return {s}  # Return the string itself if it's shorter than n
         s = f" {s} "
-        return {s[i:i+n] for i in range(max(len(s)-n+1, 1))}
+        return {s[i:i+n] for i in range(len(s)-n+1)}
     tgt = ngrams(target, n)
     sims = universe.map(lambda x: textdistance.jaccard(tgt, ngrams(x, n)))
     idx = sims.idxmax()
@@ -175,15 +195,26 @@ def _best_match_recordlinkage(i: int, master_keys: pd.Series, using_keys: pd.Ser
 def _best_match_name_matching(i: int, master_keys: pd.Series, using_keys: pd.Series):
     if NameMatcher is None:
         return pd.NA, 0.0, "name_matching (missing)"
-    master_single = master_keys.iloc[[i]].to_frame(name="key")
-    using_df = using_keys.to_frame(name="key")
-    matcher = NameMatcher(number_of_matches=1, top_n=1, verbose=False)
-    matcher.load_and_process_master_data(column='key', df_matching_data=using_df, transform=True)
-    matches = matcher.match_names(to_be_matched=master_single, column_matching='key')
-    if matches.empty:
+    try:
+        master_single = master_keys.iloc[[i]].to_frame(name="key")
+        using_df = using_keys.to_frame(name="key")
+        matcher = NameMatcher(number_of_matches=1, top_n=1, verbose=False)
+        matcher.load_and_process_master_data(column='key', df_matching_data=using_df, transform=True)
+        matches = matcher.match_names(to_be_matched=master_single, column_matching='key')
+        if matches.empty:
+            return pd.NA, 0.0, "name_matching"
+        best = matches.iloc[0]
+        # Handle different possible column names for similarity
+        similarity_col = None
+        for col in ['similarity', 'score', 'match_score']:
+            if col in best.index:
+                similarity_col = col
+                break
+        if similarity_col is None:
+            return pd.NA, 0.0, "name_matching"
+        return best["match_index"], float(best[similarity_col] * 100), "name_matching"
+    except Exception as e:
         return pd.NA, 0.0, "name_matching"
-    best = matches.iloc[0]
-    return best["match_index"], float(best["similarity"] * 100), "name_matching"
 
 def _best_match_tfidf_cosine(target: str, res: Resources):
     if res.tfidf_vectorizer is None or res.tfidf_matrix is None:
@@ -197,28 +228,77 @@ def _best_match_tfidf_cosine(target: str, res: Resources):
 def _best_match_soundex(target: str, res: Resources):
     if phonetics is None or res.using_soundex is None:
         return pd.NA, 0.0, "soundex (missing)"
-    tgt = phonetics.soundex(target)
-    # simple equality -> 100; else Jaro-Winkler on codes
+    
+    # Handle empty or very short target strings
+    if not target or len(target.strip()) == 0:
+        return pd.NA, 0.0, "soundex"
+    
+    try:
+        tgt = jellyfish.soundex(target)
+        if not tgt:  # If soundex returns empty string
+            return pd.NA, 0.0, "soundex"
+    except:
+        return pd.NA, 0.0, "soundex"
+    
+    # Calculate similarities for all codes (including empty ones)
     codes = res.using_soundex
-    sims = codes.map(lambda c: 1.0 if c == tgt else textdistance.jaro_winkler.normalized_similarity(tgt, c))
+    
+    def calculate_similarity(code):
+        if not code or code == "":  # Handle empty codes
+            return 0.0
+        if code == tgt:  # Exact match
+            return 1.0
+        else:  # Use Jaro-Winkler similarity
+            return textdistance.jaro_winkler.normalized_similarity(tgt, code)
+    
+    sims = codes.map(calculate_similarity)
+    if sims.empty:
+        return pd.NA, 0.0, "soundex"
+    
     idx = sims.idxmax()
-    return idx, float(sims.loc[idx] * 100), "soundex"
+    best_score = sims.loc[idx] * 100
+    return idx, float(best_score), "soundex"
 
 def _best_match_double_metaphone(target: str, res: Resources):
     if phonetics is None or res.using_dm_primary is None:
         return pd.NA, 0.0, "double_metaphone (missing)"
-    tprim, tsec = phonetics.dmetaphone(target)
-    tprim = tprim or ""
-    tsec = tsec or ""
+    
+    # Handle empty or very short target strings
+    if not target or len(target.strip()) == 0:
+        return pd.NA, 0.0, "double_metaphone"
+    
+    try:
+        tprim, tsec = phonetics.dmetaphone(target)
+        tprim = tprim or ""
+        tsec = tsec or ""
+        if not tprim and not tsec:  # If both codes are empty
+            return pd.NA, 0.0, "double_metaphone"
+    except:
+        return pd.NA, 0.0, "double_metaphone"
+    
     def sim(code):
+        if not code:  # Skip empty codes
+            return 0.0
         return max(
-            textdistance.jaro_winkler.normalized_similarity(code, tprim),
-            textdistance.jaro_winkler.normalized_similarity(code, tsec),
+            textdistance.jaro_winkler.normalized_similarity(code, tprim) if tprim else 0.0,
+            textdistance.jaro_winkler.normalized_similarity(code, tsec) if tsec else 0.0,
         )
+    
+    # Filter out empty codes
+    valid_primary = res.using_dm_primary[res.using_dm_primary != ""]
+    valid_secondary = res.using_dm_secondary[res.using_dm_secondary != ""]
+    
+    if valid_primary.empty and valid_secondary.empty:
+        return pd.NA, 0.0, "double_metaphone"
+    
     sims = pd.concat([
-        res.using_dm_primary.map(sim),
-        res.using_dm_secondary.map(sim)
+        valid_primary.map(sim),
+        valid_secondary.map(sim)
     ], axis=1).max(axis=1)
+    
+    if sims.empty:
+        return pd.NA, 0.0, "double_metaphone"
+    
     idx = sims.idxmax()
     return idx, float(sims.loc[idx] * 100), "double_metaphone"
 
@@ -343,16 +423,41 @@ def fuzzy_match(
         }
         # add per-method columns (only selected)
         for m in selected_methods:
-            col = f"{m}_score"
-            row[col] = round(per_method.get(m, (pd.NA, 0.0))[1], 2)
+            score_col = f"{m}_score"
+            match_col = f"{m}_match"
+            using_idx_m, score_m = per_method.get(m, (pd.NA, 0.0))
+            row[score_col] = round(score_m, 2)
+            # Get the actual matched string
+            if pd.isna(using_idx_m):
+                row[match_col] = ""
+            else:
+                row[match_col] = using_keys.loc[using_idx_m]
         results.append(row)
 
     link = pd.DataFrame(results).set_index("master_index")
+    # Ensure using_index is numeric for proper merging
+    link['using_index'] = pd.to_numeric(link['using_index'], errors='coerce')
     merged = master_df.join(link, how="left")
     merged = merged.merge(
         using_df.add_prefix("using_"), left_on="using_index", right_index=True, how="left"
     )
-    return merged
+    
+    # Create a simplified output with only essential columns
+    # Get the key columns from both datasets
+    master_key_cols = [f"{key}" for key in keys]
+    using_key_cols = [f"using_{key}" for key in keys]
+    
+    # Select only the essential columns for display
+    essential_cols = master_key_cols + using_key_cols
+    
+    # Add method-specific score and match columns
+    for m in selected_methods:
+        essential_cols.extend([f"{m}_score", f"{m}_match"])
+    
+    # Filter to only include columns that exist in the merged dataframe
+    display_cols = [col for col in essential_cols if col in merged.columns]
+    
+    return merged[display_cols]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Streamlit app interface
