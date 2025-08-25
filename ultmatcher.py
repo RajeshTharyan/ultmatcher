@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from pathlib import Path
-from typing import List, Dict, Tuple, Callable
+from typing import List, Dict, Tuple, Callable, Optional, Any
 from dataclasses import dataclass, field
 
 # Core libs already used
@@ -89,16 +89,16 @@ def _build_key_series(df: pd.DataFrame, keys: List[str]) -> pd.Series:
 class Resources:
     using_keys: pd.Series
     # TF-IDF
-    tfidf_vectorizer: TfidfVectorizer | None = None
-    tfidf_matrix: any = None
+    tfidf_vectorizer: Optional[TfidfVectorizer] = None
+    tfidf_matrix: Any = None
     # Sentence embeddings
     sbert_model_name: str = "all-MiniLM-L6-v2"
-    sbert_model: SentenceTransformer | None = None
-    using_embeddings: any = None
+    sbert_model: Optional[SentenceTransformer] = None
+    using_embeddings: Any = None
     # Phonetics
-    using_soundex: pd.Series | None = None
-    using_dm_primary: pd.Series | None = None
-    using_dm_secondary: pd.Series | None = None
+    using_soundex: Optional[pd.Series] = None
+    using_dm_primary: Optional[pd.Series] = None
+    using_dm_secondary: Optional[pd.Series] = None
 
 def build_resources(using_keys: pd.Series, methods: List[str]) -> Resources:
     res = Resources(using_keys=using_keys)
@@ -305,7 +305,7 @@ def fuzzy_match(
 
     results = []
     for i, key_string in master_keys.items():
-        per_method: Dict[str, Tuple[any, float]] = {}
+        per_method: Dict[str, Tuple[Any, float]] = {}
         # Methods that work on (target, universe)
         for m in selected_methods:
             if m in ("recordlinkage", "name_matching"):
@@ -357,6 +357,34 @@ def fuzzy_match(
 # ─────────────────────────────────────────────────────────────────────────────
 # Streamlit app interface
 # ─────────────────────────────────────────────────────────────────────────────
+METHOD_HELP = {
+    # Edit-distance
+    "rapidfuzz": "Fast general matcher; good for short messy strings where word order may vary.",
+    "textdistance": "Jaro–Winkler: tolerant to minor typos; strong for person/org names.",
+    "levenshtein": "Counts insertions/deletions/substitutions; best for short IDs/codes.",
+    "damerau_levenshtein": "Like Levenshtein + transpositions; handles adjacent letter swaps.",
+    # Token-based
+    "jaccard_tokens": "Word-set overlap; use when same words appear in different orders.",
+    "trigram_overlap": "Character 3-gram overlap; robust to truncation/partial matches.",
+    "tfidf_cosine": "Vector-space similarity; better for longer strings/descriptions.",
+    # Phonetic
+    "soundex": "Pronunciation matching for English names; handles spelling variants.",
+    "double_metaphone": "Improved phonetic matching (primary/secondary); names/brands.",
+    "name_matching": "Blends phonetic and typo metrics; tailored for names/entities.",
+    # Semantic
+    "sentence_transformers": "Context-aware embeddings; for long text where meaning matters.",
+    # Record-linkage
+    "recordlinkage": "Field-wise statistical linkage; best for structured multi-column data.",
+}
+
+CATEGORY_TIPS = {
+    "Edit-distance": "Good for short strings, IDs, and names with small typos or transpositions.",
+    "Token-based": "Useful when word order changes or for partial/substring overlaps.",
+    "Phonetic": "Best when spelling varies but pronunciation is similar (names/brands).",
+    "Semantic": "For long descriptions where contextual meaning drives similarity.",
+    "Record-linkage": "For multi-field entity resolution across structured datasets.",
+}
+
 with st.sidebar:
     st.header("Upload Files")
     master_file = st.file_uploader("Upload MASTER file", type=["csv", "xlsx", "xls", "dta"])
@@ -366,7 +394,8 @@ with st.sidebar:
     st.subheader("Choose Matching Methods")
 
     # "Select all" checkbox
-    select_all = st.checkbox("Select ALL methods", value=True)
+    select_all = st.checkbox("Select ALL methods", value=True,
+                             help="Run every available method. Uncheck to pick specific methods by category.")
 
     selected_methods: List[str] = []
     if select_all:
@@ -375,22 +404,38 @@ with st.sidebar:
     else:
         for cat, items in CATEGORIES.items():
             with st.expander(cat, expanded=False):
+                st.caption(CATEGORY_TIPS.get(cat, ""))
                 opts = st.multiselect(
                     f"{cat} methods",
                     options=list(items.keys()),
                     format_func=lambda k, i=items: i[k],
                     key=f"ms_{cat}",
+                    help=CATEGORY_TIPS.get(cat, "")
                 )
+                # Show one-line help for each method in this category
+                with st.container():
+                    st.markdown("<small><b>Cheat sheet</b></small>", unsafe_allow_html=True)
+                    for k in items.keys():
+                        st.caption(f"• **{items[k]}** — {METHOD_HELP.get(k, '')}")
                 selected_methods.extend(opts)
 
-    # de-dup & stable order
+    # De-dup & stable order
     ordered_all = [k for cat in CATEGORIES.values() for k in cat.keys()]
     selected_methods = [m for m in ordered_all if m in set(selected_methods)]
 
+    # Optional deps notice
     if _missing:
         with st.expander("Missing/optional dependencies", expanded=False):
             for k, msg in _missing.items():
                 st.caption(f"• `{k}` not available: {msg}")
+
+    # Global quick reference (collapsible)
+    with st.expander("Method cheat sheet (all)", expanded=False):
+        for cat, items in CATEGORIES.items():
+            st.markdown(f"**{cat}** — {CATEGORY_TIPS.get(cat, '')}")
+            for k, label in items.items():
+                st.caption(f"• **{label}** — {METHOD_HELP.get(k, '')}")
+            st.write("")
 
 if master_file and using_file:
     try:

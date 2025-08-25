@@ -1,20 +1,24 @@
 # Core
-streamlit==1.38.0
+streamlit==1.44.1
 pandas==2.2.2
+numpy==1.26.4
 
 # Fuzzy matching
-rapidfuzz==3.10.1
-textdistance==4.6.2
+rapidfuzz==3.13.0
+textdistance==4.2.1
 recordlinkage==0.16
-name-matching==0.6.3
+name-matching==0.8.12
 
 # Token-based methods
-scikit-learn==1.5.2
+scikit-learn==1.7.1
 
 # Phonetic methods
 phonetics==1.0.5
 
 # Semantic methods
-sentence-transformers==3.0.1
-torch==2.3.1
-transformers==4.44.2
+sentence-transformers==2.7.0
+torch==2.8.0
+transformers==4.55.4
+
+# Other dependencies
+scipy==1.16.1
