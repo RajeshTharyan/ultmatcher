@@ -4,7 +4,7 @@ pandas==2.2.2
 numpy==1.26.4
 
 # Fuzzy matching
-rapidfuzz==3.13.0
+rapidfuzz==3.5.2
 textdistance==4.2.1
 recordlinkage==0.16
 name-matching==0.8.12
