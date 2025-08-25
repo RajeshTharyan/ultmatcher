@@ -57,6 +57,8 @@ This app allows you to perform fuzzy matching between two datasets using multipl
 The app supports edit-distance, token-based, phonetic, and semantic techniques, enabling robust handling of typos, abbreviations, reordered words, pronunciation variants, and contextual meaning. Users can choose any combination of methods 
 and download results in CSV, Excel, or Stata format.
 
+A simpler version with fewer matching algorithm is at https://mergefuzzy-adaygyk3xyvni7nuvscew3.streamlit.app/
+
 **How to use:**
 1. Upload your MASTER and USING files in the sidebar (supported formats: CSV, Excel, Stata).
 2. Select the key columns that exist in both datasets for matching.
