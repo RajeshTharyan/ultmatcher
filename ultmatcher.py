@@ -50,6 +50,21 @@ st.set_page_config(page_title="Fuzzy Matcher", layout="wide")
 st.title("Fuzzy Dataset Matcher")
 st.markdown("By: **Prof. Rajesh Tharyan**")
 
+st.markdown("""
+**What does this app do?**
+
+This app allows you to perform fuzzy matching between two datasets using multiple algorithms. You can upload a "MASTER" file and a "USING" file, select the key columns to match on, and compare results from different fuzzy matching methods.
+The app supports edit-distance, token-based, phonetic, and semantic techniques, enabling robust handling of typos, abbreviations, reordered words, pronunciation variants, and contextual meaning. Users can choose any combination of methods 
+and download results in CSV, Excel, or Stata format.
+
+**How to use:**
+1. Upload your MASTER and USING files in the sidebar (supported formats: CSV, Excel, Stata).
+2. Select the key columns that exist in both datasets for matching.
+3. Choose specific matching algorithms or select all algorithms.
+4. Click "Run Fuzzy Match" to see the resulting matches.
+5. Download the matched results in your preferred format (CSV, Excel, Stata).
+""")
+
 print("Missing dependencies:", _missing)
 
 # ─────────────────────────────────────────────────────────────────────────────
