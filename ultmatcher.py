@@ -419,20 +419,25 @@ def fuzzy_match(
                 # Fallback to raw if unknown
                 best_method, (using_idx, best_score) = max(per_method.items(), key=lambda kv: kv[1][1])
 
-        # Build row
+        # Build row (add per-method matched names + best matched name)
         row = {
             "master_index": i,
             "using_index": using_idx,
             "best_score": round(float(best_score), 2),
             "method": best_method,
+            "best_match_name": using_keys.loc[using_idx] if using_idx in using_keys.index else pd.NA,
         }
-        # Per-method score columns (as selected)
+        # Per-method score & matched-name columns
         for m in selected_methods:
-            col = f"{m}_score"
+            score_col = f"{m}_score"
+            match_col = f"{m}_match"
             if m in per_method:
-                row[col] = round(float(per_method[m][1]), 2)
+                uidx = per_method[m][0]
+                row[score_col] = round(float(per_method[m][1]), 2)
+                row[match_col] = using_keys.loc[uidx] if uidx in using_keys.index else pd.NA
             else:
-                row[col] = pd.NA
+                row[score_col] = pd.NA
+                row[match_col] = pd.NA
         results.append(row)
 
     link = pd.DataFrame(results).set_index("master_index")
@@ -441,14 +446,14 @@ def fuzzy_match(
         using_df.add_prefix("using_"), left_on="using_index", right_index=True, how="left"
     )
 
-    # ───── FIX REQUEST: only show the matching variables plus scores/methods ─────
-    per_method_cols = [c for c in merged.columns if c.endswith("_score")]
-    core_cols = ["using_index", "best_score", "method"]
+    # Keep only matching variables + per-method scores/matches + best info
+    per_method_score_cols = [c for c in merged.columns if c.endswith("_score")]
+    per_method_match_cols = [c for c in merged.columns if c.endswith("_match")]
+    core_cols = ["using_index", "best_score", "method", "best_match_name"]
     master_key_cols = keys
     using_key_cols = [f"using_{k}" for k in keys if f"using_{k}" in merged.columns]
-    keep_cols = list(dict.fromkeys(master_key_cols + using_key_cols + core_cols + per_method_cols))
+    keep_cols = list(dict.fromkeys(master_key_cols + using_key_cols + core_cols + per_method_score_cols + per_method_match_cols))
     merged = merged[keep_cols]
-    # ────────────────────────────────────────────────────────────────────────────
 
     return merged
 
@@ -543,7 +548,8 @@ if master_file and using_file:
                 score_view = "normalised (0–100)" if (comparison_mode == "Normalize scores before comparison" and show_normalised) else "raw"
                 st.markdown(
                     f"<small><i>Legend:</i> Best-match strategy = <b>{comparison_mode}</b>; "
-                    f"per-method score columns are shown as <b>{score_view}</b>.</small>",
+                    f"per-method score columns are shown as <b>{score_view}</b>. "
+                    f"For each method, *_match shows the matched name; overall best is in <b>best_match_name</b>.</small>",
                     unsafe_allow_html=True
                 )
 
