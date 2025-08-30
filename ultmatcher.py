@@ -238,11 +238,13 @@ def _best_match_tfidf_cosine(target: str, res: Resources):
     return using_idx, float(sims[j] * 100), "tfidf_cosine"
 
 def _best_match_soundex(target: str, res: Resources):
+    # Avoid flat 100s by combining code-sim and string-sim
     if phonetics is None or res.using_soundex is None:
         return pd.NA, 0.0, "soundex (missing)"
-    tgt = _safe_soundex(target)
-    codes = res.using_soundex
-    sims = codes.map(lambda c: 1.0 if c == tgt else textdistance.jaro_winkler.normalized_similarity(tgt, c))
+    tgt_code = _safe_soundex(target)
+    code_sims = res.using_soundex.map(lambda c: textdistance.jaro_winkler.normalized_similarity(tgt_code, c))
+    str_sims  = res.using_keys.map(lambda x: textdistance.jaro_winkler.normalized_similarity(target, x))
+    sims = 0.6 * code_sims + 0.4 * str_sims
     idx = sims.idxmax()
     return idx, float(sims.loc[idx] * 100), "soundex"
 
@@ -449,10 +451,25 @@ def fuzzy_match(
     # Keep only matching variables + per-method scores/matches + best info
     per_method_score_cols = [c for c in merged.columns if c.endswith("_score")]
     per_method_match_cols = [c for c in merged.columns if c.endswith("_match")]
+    # ─── Targeted fix: add combined columns "<method>_result" showing "matched name (score)" ───
+    combined_cols = []
+    for col in per_method_score_cols:
+        method = col[:-6]  # remove "_score"
+        match_col = f"{method}_match"
+        result_col = f"{method}_result"
+        if match_col in merged.columns:
+            merged[result_col] = merged.apply(
+                lambda r: (f"{r[match_col]} ({r[col]})") if pd.notna(r.get(match_col)) and pd.notna(r.get(col)) else pd.NA,
+                axis=1
+            )
+            combined_cols.append(result_col)
+    # ──────────────────────────────────────────────────────────────────────────
+
     core_cols = ["using_index", "best_score", "method", "best_match_name"]
     master_key_cols = keys
     using_key_cols = [f"using_{k}" for k in keys if f"using_{k}" in merged.columns]
-    keep_cols = list(dict.fromkeys(master_key_cols + using_key_cols + core_cols + per_method_score_cols + per_method_match_cols))
+    # Place combined "<method>_result" just before separate score/match columns
+    keep_cols = list(dict.fromkeys(master_key_cols + using_key_cols + core_cols + combined_cols + per_method_score_cols + per_method_match_cols))
     merged = merged[keep_cols]
 
     return merged
@@ -548,8 +565,9 @@ if master_file and using_file:
                 score_view = "normalised (0–100)" if (comparison_mode == "Normalize scores before comparison" and show_normalised) else "raw"
                 st.markdown(
                     f"<small><i>Legend:</i> Best-match strategy = <b>{comparison_mode}</b>; "
-                    f"per-method score columns are shown as <b>{score_view}</b>. "
-                    f"For each method, *_match shows the matched name; overall best is in <b>best_match_name</b>.</small>",
+                    f"per-method results shown as <b>&lt;matched name&gt; (score)</b> in *_result columns. "
+                    f"Per-method *_score and *_match are also included. "
+                    f"Overall best match name is in <b>best_match_name</b>.</small>",
                     unsafe_allow_html=True
                 )
 
