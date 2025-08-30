@@ -215,7 +215,19 @@ def _best_match_name_matching(i: int, master_keys: pd.Series, using_keys: pd.Ser
     if matches.empty:
         return pd.NA, 0.0, "name_matching"
     best = matches.iloc[0]
-    return best["match_index"], float(best["similarity"] * 100), "name_matching"
+
+    # ---- FIX: robustly extract similarity regardless of column name ----
+    sim_col = None
+    for candidate in ("similarity", "similarity_score", "score", "ratio", "confidence"):
+        if candidate in matches.columns:
+            sim_col = candidate
+            break
+    sim_val = float(best[sim_col]) if sim_col else 0.0
+    if sim_val <= 1.0:
+        sim_val *= 100.0
+    # -------------------------------------------------------------------
+
+    return best.get("match_index", pd.NA), float(sim_val), "name_matching"
 
 def _best_match_tfidf_cosine(target: str, res: Resources):
     if res.tfidf_vectorizer is None or res.tfidf_matrix is None:
