@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from pathlib import Path
-from typing import List, Dict, Tuple, Callable, Optional, Any
+from typing import List, Dict, Tuple, Callable
 from dataclasses import dataclass
 from rapidfuzz import fuzz, process
 import textdistance
@@ -81,6 +81,39 @@ def _build_key_series(df: pd.DataFrame, keys: List[str]) -> pd.Series:
     return _normalize(df[keys].apply(lambda r: " ".join(r.astype(str)), axis=1))
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Safe phonetic helpers to avoid "string index out of range" on empty strings
+# ─────────────────────────────────────────────────────────────────────────────
+def _safe_soundex(s) -> str:
+    if phonetics is None:
+        return ""
+    s = str(s or "").strip()
+    if not s:
+        return ""
+    try:
+        return phonetics.soundex(s)
+    except Exception:
+        return ""
+
+def _safe_dmetaphone(s) -> Tuple[str, str]:
+    if phonetics is None:
+        return ("", "")
+    s = str(s or "").strip()
+    if not s:
+        return ("", "")
+    try:
+        dm = phonetics.dmetaphone(s)
+        if isinstance(dm, (list, tuple)):
+            p = dm[0] or ""
+            q = dm[1] or ""
+            return (p, q)
+        elif isinstance(dm, str):
+            return (dm, "")
+        else:
+            return ("", "")
+    except Exception:
+        return ("", "")
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Resources (precompute once for selected methods)
 # ─────────────────────────────────────────────────────────────────────────────
 @dataclass
@@ -109,11 +142,11 @@ def build_resources(using_keys: pd.Series, methods: List[str]) -> Resources:
             normalize_embeddings=True,
             show_progress_bar=False
         )
-    # Phonetics
+    # Phonetics (use safe wrappers)
     if ("soundex" in methods or "double_metaphone" in methods) and phonetics is not None:
-        res.using_soundex = using_keys.map(lambda x: phonetics.soundex(x))
-        res.using_dm_primary = using_keys.map(lambda x: (phonetics.dmetaphone(x)[0] or ""))
-        res.using_dm_secondary = using_keys.map(lambda x: (phonetics.dmetaphone(x)[1] or ""))
+        res.using_soundex = using_keys.map(_safe_soundex)
+        res.using_dm_primary = using_keys.map(lambda x: _safe_dmetaphone(x)[0])
+        res.using_dm_secondary = using_keys.map(lambda x: _safe_dmetaphone(x)[1])
     return res
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -196,7 +229,7 @@ def _best_match_tfidf_cosine(target: str, res: Resources):
 def _best_match_soundex(target: str, res: Resources):
     if phonetics is None or res.using_soundex is None:
         return pd.NA, 0.0, "soundex (missing)"
-    tgt = phonetics.soundex(target)
+    tgt = _safe_soundex(target)
     codes = res.using_soundex
     sims = codes.map(lambda c: 1.0 if c == tgt else textdistance.jaro_winkler.normalized_similarity(tgt, c))
     idx = sims.idxmax()
@@ -205,9 +238,7 @@ def _best_match_soundex(target: str, res: Resources):
 def _best_match_double_metaphone(target: str, res: Resources):
     if phonetics is None or res.using_dm_primary is None:
         return pd.NA, 0.0, "double_metaphone (missing)"
-    tprim, tsec = phonetics.dmetaphone(target)
-    tprim = tprim or ""
-    tsec = tsec or ""
+    tprim, tsec = _safe_dmetaphone(target)
     def sim(code):
         return max(
             textdistance.jaro_winkler.normalized_similarity(code, tprim),
@@ -290,7 +321,7 @@ def _normalize_score(score: float, method: str) -> float:
     return float(score)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Core fuzzy matcher (now supports comparison strategy & optional display)
+# Core fuzzy matcher (supports comparison strategy & optional display)
 # ─────────────────────────────────────────────────────────────────────────────
 def fuzzy_match(
     master_df: pd.DataFrame,
