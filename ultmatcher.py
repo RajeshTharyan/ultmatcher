@@ -1,50 +1,73 @@
 import streamlit as st
 import pandas as pd
 from pathlib import Path
-from typing import List, Dict, Tuple, Callable
-from dataclasses import dataclass
+from typing import List, Dict, Tuple, Callable, Optional, Any
+from dataclasses import dataclass, field
+
+# Core libs already used
 from rapidfuzz import fuzz, process
 import textdistance
 
-# Optional deps: handle import errors gracefully
+# Optional deps: handle import errors at runtime
 _missing: Dict[str, str] = {}
 
 try:
     import recordlinkage as rl
-except Exception as e:
+except Exception as e:  # pragma: no cover
     rl = None
     _missing["recordlinkage"] = f"{e}"
 
 try:
     from name_matching.name_matcher import NameMatcher
-except Exception as e:
+except Exception as e:  # pragma: no cover
     NameMatcher = None
     _missing["name_matching"] = f"{e}"
 
 try:
-    import phonetics  # soundex, double-metaphone
-except Exception as e:
+    import phonetics  # soundex, metaphone
+except Exception as e:  # pragma: no cover
     phonetics = None
     _missing["phonetics"] = f"{e}"
 
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.metrics.pairwise import cosine_similarity
-except Exception as e:
+except Exception as e:  # pragma: no cover
     TfidfVectorizer = None
     cosine_similarity = None
-    _missing["scikit-learn"] = f"{e}"
+    _missing["sklearn"] = f"{e}"
 
 try:
     from sentence_transformers import SentenceTransformer, util as st_util
-except Exception as e:
+except Exception as e:  # pragma: no cover
     SentenceTransformer = None
     st_util = None
-    _missing["sentence-transformers"] = f"{e}"
+    _missing["sentence_transformers"] = f"{e}"
+
+import jellyfish
 
 st.set_page_config(page_title="Fuzzy Matcher", layout="wide")
 st.title("Fuzzy Dataset Matcher")
 st.markdown("By: **Prof. Rajesh Tharyan**")
+
+st.markdown("""
+**What does this app do?**
+
+This app allows you to perform fuzzy matching between two datasets using multiple algorithms. You can upload a "MASTER" file and a "USING" file, select the key columns to match on, and compare results from different fuzzy matching methods.
+The app supports edit-distance, token-based, phonetic, and semantic techniques, enabling robust handling of typos, abbreviations, reordered words, pronunciation variants, and contextual meaning. Users can choose any combination of methods 
+and download results in CSV, Excel, or Stata format.
+
+A simpler version with fewer matching algorithm is at https://mergefuzzy-adaygyk3xyvni7nuvscew3.streamlit.app/
+
+**How to use:**
+1. Upload your MASTER and USING files in the sidebar (supported formats: CSV, Excel, Stata).
+2. Select the key columns that exist in both datasets for matching.
+3. Choose specific matching algorithms or select all algorithms.
+4. Click "Run Fuzzy Match" to see the resulting matches.
+5. Download the matched results in your preferred format (CSV, Excel, Stata).
+""")
+
+print("Missing dependencies:", _missing)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Utility helpers
@@ -81,52 +104,22 @@ def _build_key_series(df: pd.DataFrame, keys: List[str]) -> pd.Series:
     return _normalize(df[keys].apply(lambda r: " ".join(r.astype(str)), axis=1))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Safe phonetic helpers to avoid "string index out of range" on empty strings
-# ─────────────────────────────────────────────────────────────────────────────
-def _safe_soundex(s) -> str:
-    if phonetics is None:
-        return ""
-    s = str(s or "").strip()
-    if not s:
-        return ""
-    try:
-        return phonetics.soundex(s)
-    except Exception:
-        return ""
-
-def _safe_dmetaphone(s) -> Tuple[str, str]:
-    if phonetics is None:
-        return ("", "")
-    s = str(s or "").strip()
-    if not s:
-        return ("", "")
-    try:
-        dm = phonetics.dmetaphone(s)
-        if isinstance(dm, (list, tuple)):
-            p = dm[0] or ""
-            q = dm[1] or ""
-            return (p, q)
-        elif isinstance(dm, str):
-            return (dm, "")
-        else:
-            return ("", "")
-    except Exception:
-        return ("", "")
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Resources (precompute once for selected methods)
 # ─────────────────────────────────────────────────────────────────────────────
 @dataclass
 class Resources:
     using_keys: pd.Series
-    tfidf_vectorizer: TfidfVectorizer | None = None
-    tfidf_matrix: any = None
+    # TF-IDF
+    tfidf_vectorizer: Optional[TfidfVectorizer] = None
+    tfidf_matrix: Any = None
+    # Sentence embeddings
     sbert_model_name: str = "all-MiniLM-L6-v2"
-    sbert_model: SentenceTransformer | None = None
-    using_embeddings: any = None
-    using_soundex: pd.Series | None = None
-    using_dm_primary: pd.Series | None = None
-    using_dm_secondary: pd.Series | None = None
+    sbert_model: Optional[SentenceTransformer] = None
+    using_embeddings: Any = None
+    # Phonetics
+    using_soundex: Optional[pd.Series] = None
+    using_dm_primary: Optional[pd.Series] = None
+    using_dm_secondary: Optional[pd.Series] = None
 
 def build_resources(using_keys: pd.Series, methods: List[str]) -> Resources:
     res = Resources(using_keys=using_keys)
@@ -137,16 +130,26 @@ def build_resources(using_keys: pd.Series, methods: List[str]) -> Resources:
     # Sentence embeddings
     if "sentence_transformers" in methods and SentenceTransformer is not None:
         res.sbert_model = SentenceTransformer(res.sbert_model_name)
-        res.using_embeddings = res.sbert_model.encode(
-            list(using_keys.values),
-            normalize_embeddings=True,
-            show_progress_bar=False
-        )
-    # Phonetics (use safe wrappers)
-    if ("soundex" in methods or "double_metaphone" in methods) and phonetics is not None:
-        res.using_soundex = using_keys.map(_safe_soundex)
-        res.using_dm_primary = using_keys.map(lambda x: _safe_dmetaphone(x)[0])
-        res.using_dm_secondary = using_keys.map(lambda x: _safe_dmetaphone(x)[1])
+        res.using_embeddings = res.sbert_model.encode(list(using_keys.values), normalize_embeddings=True, show_progress_bar=False)
+    # Phonetics
+    # Always use jellyfish for Soundex codes (more reliable)
+    if "soundex" in methods:
+        res.using_soundex = using_keys.map(lambda x: jellyfish.soundex(x) if x and len(x.strip()) > 0 else "")
+
+    # Double Metaphone still relies on phonetics package
+    if "double_metaphone" in methods and phonetics is not None:
+        def safe_dmetaphone(x):
+            try:
+                if x and len(x.strip()) > 0:
+                    result = phonetics.dmetaphone(x)
+                    return (result[0] or "", result[1] or "")
+                else:
+                    return ("", "")
+            except:
+                return ("", "")
+        dm_results = using_keys.map(safe_dmetaphone)
+        res.using_dm_primary = dm_results.map(lambda x: x[0])
+        res.using_dm_secondary = dm_results.map(lambda x: x[1])
     return res
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -181,8 +184,10 @@ def _best_match_jaccard_tokens(target: str, universe: pd.Series):
 
 def _best_match_trigram_overlap(target: str, universe: pd.Series, n: int = 3):
     def ngrams(s: str, n: int) -> set:
+        if len(s) < n:
+            return {s}  # Return the string itself if it's shorter than n
         s = f" {s} "
-        return {s[i:i+n] for i in range(max(len(s)-n+1, 1))}
+        return {s[i:i+n] for i in range(len(s)-n+1)}
     tgt = ngrams(target, n)
     sims = universe.map(lambda x: textdistance.jaccard(tgt, ngrams(x, n)))
     idx = sims.idxmax()
@@ -207,26 +212,26 @@ def _best_match_recordlinkage(i: int, master_keys: pd.Series, using_keys: pd.Ser
 def _best_match_name_matching(i: int, master_keys: pd.Series, using_keys: pd.Series):
     if NameMatcher is None:
         return pd.NA, 0.0, "name_matching (missing)"
-    master_single = master_keys.iloc[[i]].to_frame(name="key")
-    using_df = using_keys.to_frame(name="key")
-    matcher = NameMatcher(number_of_matches=1, top_n=1, verbose=False)
-    matcher.load_and_process_master_data(column='key', df_matching_data=using_df, transform=True)
-    matches = matcher.match_names(to_be_matched=master_single, column_matching='key')
-    if matches.empty:
+    try:
+        master_single = master_keys.iloc[[i]].to_frame(name="key")
+        using_df = using_keys.to_frame(name="key")
+        matcher = NameMatcher(number_of_matches=1, top_n=1, verbose=False)
+        matcher.load_and_process_master_data(column='key', df_matching_data=using_df, transform=True)
+        matches = matcher.match_names(to_be_matched=master_single, column_matching='key')
+        if matches.empty:
+            return pd.NA, 0.0, "name_matching"
+        best = matches.iloc[0]
+        # Handle different possible column names for similarity
+        similarity_col = None
+        for col in ['similarity', 'score', 'match_score']:
+            if col in best.index:
+                similarity_col = col
+                break
+        if similarity_col is None:
+            return pd.NA, 0.0, "name_matching"
+        return best["match_index"], float(best[similarity_col] * 100), "name_matching"
+    except Exception as e:
         return pd.NA, 0.0, "name_matching"
-    best = matches.iloc[0]
-
-    # Robust similarity extraction
-    sim_col = None
-    for candidate in ("similarity", "similarity_score", "score", "ratio", "confidence"):
-        if candidate in matches.columns:
-            sim_col = candidate
-            break
-    sim_val = float(best[sim_col]) if sim_col else 0.0
-    if sim_val <= 1.0:
-        sim_val *= 100.0
-
-    return best.get("match_index", pd.NA), float(sim_val), "name_matching"
 
 def _best_match_tfidf_cosine(target: str, res: Resources):
     if res.tfidf_vectorizer is None or res.tfidf_matrix is None:
@@ -238,29 +243,79 @@ def _best_match_tfidf_cosine(target: str, res: Resources):
     return using_idx, float(sims[j] * 100), "tfidf_cosine"
 
 def _best_match_soundex(target: str, res: Resources):
-    # Avoid flat 100s by combining code-sim and string-sim
     if phonetics is None or res.using_soundex is None:
         return pd.NA, 0.0, "soundex (missing)"
-    tgt_code = _safe_soundex(target)
-    code_sims = res.using_soundex.map(lambda c: textdistance.jaro_winkler.normalized_similarity(tgt_code, c))
-    str_sims  = res.using_keys.map(lambda x: textdistance.jaro_winkler.normalized_similarity(target, x))
-    sims = 0.6 * code_sims + 0.4 * str_sims
+    
+    # Handle empty or very short target strings
+    if not target or len(target.strip()) == 0:
+        return pd.NA, 0.0, "soundex"
+    
+    try:
+        tgt = jellyfish.soundex(target)
+        if not tgt:  # If soundex returns empty string
+            return pd.NA, 0.0, "soundex"
+    except:
+        return pd.NA, 0.0, "soundex"
+    
+    # Calculate similarities for all codes (including empty ones)
+    codes = res.using_soundex
+    
+    def calculate_similarity(code):
+        if not code or code == "":  # Handle empty codes
+            return 0.0
+        if code == tgt:  # Exact match
+            return 1.0
+        else:  # Use Jaro-Winkler similarity
+            return textdistance.jaro_winkler.normalized_similarity(tgt, code)
+    
+    sims = codes.map(calculate_similarity)
+    if sims.empty:
+        return pd.NA, 0.0, "soundex"
+    
     idx = sims.idxmax()
-    return idx, float(sims.loc[idx] * 100), "soundex"
+    best_score = sims.loc[idx] * 100
+    return idx, float(best_score), "soundex"
 
 def _best_match_double_metaphone(target: str, res: Resources):
     if phonetics is None or res.using_dm_primary is None:
         return pd.NA, 0.0, "double_metaphone (missing)"
-    tprim, tsec = _safe_dmetaphone(target)
+    
+    # Handle empty or very short target strings
+    if not target or len(target.strip()) == 0:
+        return pd.NA, 0.0, "double_metaphone"
+    
+    try:
+        tprim, tsec = phonetics.dmetaphone(target)
+        tprim = tprim or ""
+        tsec = tsec or ""
+        if not tprim and not tsec:  # If both codes are empty
+            return pd.NA, 0.0, "double_metaphone"
+    except:
+        return pd.NA, 0.0, "double_metaphone"
+    
     def sim(code):
+        if not code:  # Skip empty codes
+            return 0.0
         return max(
-            textdistance.jaro_winkler.normalized_similarity(code, tprim),
-            textdistance.jaro_winkler.normalized_similarity(code, tsec),
+            textdistance.jaro_winkler.normalized_similarity(code, tprim) if tprim else 0.0,
+            textdistance.jaro_winkler.normalized_similarity(code, tsec) if tsec else 0.0,
         )
+    
+    # Filter out empty codes
+    valid_primary = res.using_dm_primary[res.using_dm_primary != ""]
+    valid_secondary = res.using_dm_secondary[res.using_dm_secondary != ""]
+    
+    if valid_primary.empty and valid_secondary.empty:
+        return pd.NA, 0.0, "double_metaphone"
+    
     sims = pd.concat([
-        res.using_dm_primary.map(sim),
-        res.using_dm_secondary.map(sim)
+        valid_primary.map(sim),
+        valid_secondary.map(sim)
     ], axis=1).max(axis=1)
+    
+    if sims.empty:
+        return pd.NA, 0.0, "double_metaphone"
+    
     idx = sims.idxmax()
     return idx, float(sims.loc[idx] * 100), "double_metaphone"
 
@@ -273,7 +328,7 @@ def _best_match_sbert(target: str, res: Resources):
     using_idx = res.using_keys.index[j]
     return using_idx, float(sims[j] * 100), "sentence_transformers"
 
-# Categories for UI
+# Map for UI and execution
 CATEGORIES: Dict[str, Dict[str, str]] = {
     "Edit-distance": {
         "levenshtein": "Levenshtein distance",
@@ -299,50 +354,42 @@ CATEGORIES: Dict[str, Dict[str, str]] = {
     },
 }
 
-# Help text
-METHOD_HELP = {
-    "rapidfuzz": "Fast general matcher; good for short messy strings with word-order variance.",
-    "textdistance": "Jaro–Winkler: tolerant to minor typos; strong for names.",
-    "levenshtein": "Edit distance (insert/delete/substitute); short codes/IDs.",
-    "damerau_levenshtein": "Levenshtein + transpositions; adjacent letter swaps.",
-    "jaccard_tokens": "Word-set overlap; word order can differ.",
-    "trigram_overlap": "Character 3-gram Jaccard; robust to truncation/partials.",
-    "tfidf_cosine": "Vector-space similarity; longer strings/descriptions.",
-    "soundex": "Pronunciation matching; English names, spelling variants.",
-    "double_metaphone": "Improved phonetic matching; names/brands.",
-    "name_matching": "Blend of phonetic & typo metrics; person/company names.",
-    "sentence_transformers": "Context-aware embeddings; long text semantics.",
-    "recordlinkage": "Field-wise statistical linkage; structured data.",
-}
-CATEGORY_TIPS = {
-    "Edit-distance": "Short strings, IDs, small typos.",
-    "Token-based": "Word order changes or partial overlaps.",
-    "Phonetic": "Spelling varies but sounds similar.",
-    "Semantic": "Long descriptions; contextual meaning.",
-    "Record-linkage": "Multi-field entity resolution.",
-}
+# Resolver from key -> function
+def method_runner_factory(key: str) -> Callable:
+    if key == "rapidfuzz":
+        return lambda t,u,r=None: _best_match_rapidfuzz(t,u)
+    if key == "textdistance":
+        return lambda t,u,r=None: _best_match_textdistance(t,u)
+    if key == "levenshtein":
+        return lambda t,u,r=None: _best_match_levenshtein(t,u)
+    if key == "damerau_levenshtein":
+        return lambda t,u,r=None: _best_match_damerau(t,u)
+    if key == "jaccard_tokens":
+        return lambda t,u,r=None: _best_match_jaccard_tokens(t,u)
+    if key == "trigram_overlap":
+        return lambda t,u,r=None: _best_match_trigram_overlap(t,u,3)
+    if key == "tfidf_cosine":
+        return lambda t,u,r: _best_match_tfidf_cosine(t,r)
+    if key == "soundex":
+        return lambda t,u,r: _best_match_soundex(t,r)
+    if key == "double_metaphone":
+        return lambda t,u,r: _best_match_double_metaphone(t,r)
+    if key == "sentence_transformers":
+        return lambda t,u,r: _best_match_sbert(t,r)
+    if key == "recordlinkage":
+        return lambda i_u_pair,u,r=None: _best_match_recordlinkage(i_u_pair[0], i_u_pair[1], u)  # special handling
+    if key == "name_matching":
+        return lambda i_u_pair,u,r=None: _best_match_name_matching(i_u_pair[0], i_u_pair[1], u)  # special handling
+    raise KeyError(key)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Normalization helper (0–100)
-# ─────────────────────────────────────────────────────────────────────────────
-def _normalize_score(score: float, method: str) -> float:
-    """Map method scores to 0–100 for fair comparison."""
-    if score is None or (isinstance(score, float) and pd.isna(score)):
-        return 0.0
-    # In this app, all implemented methods already output 0–100.
-    # If you ever add a method with 0–1000 or 0–1, convert it here.
-    return float(score)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Core fuzzy matcher (supports comparison strategy & optional display)
+# Core fuzzy matcher
 # ─────────────────────────────────────────────────────────────────────────────
 def fuzzy_match(
     master_df: pd.DataFrame,
     using_df: pd.DataFrame,
     keys: List[str],
     selected_methods: List[str],
-    comparison_mode: str,
-    show_normalised: bool
 ) -> pd.DataFrame:
 
     _validate_keys(master_df, keys)
@@ -355,128 +402,111 @@ def fuzzy_match(
 
     results = []
     for i, key_string in master_keys.items():
-        per_method: Dict[str, Tuple[any, float]] = {}
-
+        per_method: Dict[str, Tuple[Any, float]] = {}
         # Methods that work on (target, universe)
         for m in selected_methods:
             if m in ("recordlinkage", "name_matching"):
                 continue
-            if m == "rapidfuzz":
-                using_idx, score, _ = _best_match_rapidfuzz(key_string, using_keys)
-            elif m == "textdistance":
-                using_idx, score, _ = _best_match_textdistance(key_string, using_keys)
-            elif m == "levenshtein":
-                using_idx, score, _ = _best_match_levenshtein(key_string, using_keys)
-            elif m == "damerau_levenshtein":
-                using_idx, score, _ = _best_match_damerau(key_string, using_keys)
-            elif m == "jaccard_tokens":
-                using_idx, score, _ = _best_match_jaccard_tokens(key_string, using_keys)
-            elif m == "trigram_overlap":
-                using_idx, score, _ = _best_match_trigram_overlap(key_string, using_keys, 3)
-            elif m == "tfidf_cosine":
-                using_idx, score, _ = _best_match_tfidf_cosine(key_string, res)
-            elif m == "soundex":
-                using_idx, score, _ = _best_match_soundex(key_string, res)
-            elif m == "double_metaphone":
-                using_idx, score, _ = _best_match_double_metaphone(key_string, res)
-            elif m == "sentence_transformers":
-                using_idx, score, _ = _best_match_sbert(key_string, res)
-            else:
-                continue
+            runner = method_runner_factory(m)
+            try:
+                using_idx, score, _ = runner(key_string, using_keys, res)
+            except TypeError:
+                # runners w/o resources
+                using_idx, score, _ = runner(key_string, using_keys)
             per_method[m] = (using_idx, float(score))
 
         # Methods that need master index + both series
-        if "recordlinkage" in selected_methods:
-            using_idx, score, _ = _best_match_recordlinkage(i, master_keys, using_keys)
-            per_method["recordlinkage"] = (using_idx, float(score))
-        if "name_matching" in selected_methods:
-            using_idx, score, _ = _best_match_name_matching(i, master_keys, using_keys)
-            per_method["name_matching"] = (using_idx, float(score))
-
-        # pick best among selected per comparison strategy
-        if len(per_method) == 0:
-            best_method, using_idx, best_score = "", pd.NA, 0.0
-        else:
-            if comparison_mode == "Raw scores (current)":
-                best_method, (using_idx, best_score) = max(per_method.items(), key=lambda kv: kv[1][1])
-
-            elif comparison_mode == "Normalize scores before comparison":
-                normed_scores = {m: (_normalize_score(s, m), idx) for m, (idx, s) in per_method.items()}
-                best_method, (best_norm_score, using_idx) = max(normed_scores.items(), key=lambda kv: kv[1][0])
-                # For display, overwrite per-method scores if requested
-                if show_normalised:
-                    for m in list(per_method.keys()):
-                        per_method[m] = (per_method[m][0], _normalize_score(per_method[m][1], m))
-                best_score = best_norm_score
-
-            elif comparison_mode == "Hybrid/Ensemble (average rank)":
-                # Rank per-method scores (higher=better)
-                scores_only = {m: s for m, (_, s) in per_method.items()}
-                ranks = pd.Series(scores_only, dtype=float).rank(ascending=False, method="min")
-                avg_ranks = ranks.groupby(ranks.index).mean()
-                best_method = avg_ranks.idxmin()
-                using_idx, best_score = per_method[best_method]
-
+        for m in selected_methods:
+            if m not in ("recordlinkage", "name_matching"):
+                continue
+            runner = method_runner_factory(m)
+            if m == "recordlinkage":
+                using_idx, score, _ = runner((i, master_keys), using_keys)
             else:
-                # Fallback to raw if unknown
-                best_method, (using_idx, best_score) = max(per_method.items(), key=lambda kv: kv[1][1])
+                using_idx, score, _ = runner((i, master_keys), using_keys)
+            per_method[m] = (using_idx, float(score))
 
-        # Build row (add per-method matched names + best matched name)
+        # pick best among selected
+        if len(per_method) == 0:
+            best_method, (using_idx, best_score) = None, (pd.NA, 0.0)
+        else:
+            best_method, (using_idx, best_score) = max(per_method.items(), key=lambda kv: kv[1][1])
+
         row = {
             "master_index": i,
             "using_index": using_idx,
-            "best_score": round(float(best_score), 2),
-            "method": best_method,
-            "best_match_name": using_keys.loc[using_idx] if using_idx in using_keys.index else pd.NA,
+            "best_score": round(best_score, 2),
+            "method": best_method if best_method else "",
         }
-        # Per-method score & matched-name columns
+        # add per-method columns (only selected)
         for m in selected_methods:
             score_col = f"{m}_score"
             match_col = f"{m}_match"
-            if m in per_method:
-                uidx = per_method[m][0]
-                row[score_col] = round(float(per_method[m][1]), 2)
-                row[match_col] = using_keys.loc[uidx] if uidx in using_keys.index else pd.NA
+            using_idx_m, score_m = per_method.get(m, (pd.NA, 0.0))
+            row[score_col] = round(score_m, 2)
+            # Get the actual matched string
+            if pd.isna(using_idx_m):
+                row[match_col] = ""
             else:
-                row[score_col] = pd.NA
-                row[match_col] = pd.NA
+                row[match_col] = using_keys.loc[using_idx_m]
         results.append(row)
 
     link = pd.DataFrame(results).set_index("master_index")
+    # Ensure using_index is numeric for proper merging
+    link['using_index'] = pd.to_numeric(link['using_index'], errors='coerce')
     merged = master_df.join(link, how="left")
     merged = merged.merge(
         using_df.add_prefix("using_"), left_on="using_index", right_index=True, how="left"
     )
-
-    # Keep only matching variables + per-method scores/matches + best info
-    per_method_score_cols = [c for c in merged.columns if c.endswith("_score")]
-    per_method_match_cols = [c for c in merged.columns if c.endswith("_match")]
-    # ─── Targeted fix: add combined columns "<method>_result" showing "matched name (score)" ───
-    combined_cols = []
-    for col in per_method_score_cols:
-        method = col[:-6]  # remove "_score"
-        match_col = f"{method}_match"
-        result_col = f"{method}_result"
-        if match_col in merged.columns:
-            merged[result_col] = merged.apply(
-                lambda r: (f"{r[match_col]} ({r[col]})") if pd.notna(r.get(match_col)) and pd.notna(r.get(col)) else pd.NA,
-                axis=1
-            )
-            combined_cols.append(result_col)
-    # ──────────────────────────────────────────────────────────────────────────
-
-    core_cols = ["using_index", "best_score", "method", "best_match_name"]
-    master_key_cols = keys
-    using_key_cols = [f"using_{k}" for k in keys if f"using_{k}" in merged.columns]
-    # Place combined "<method>_result" just before separate score/match columns
-    keep_cols = list(dict.fromkeys(master_key_cols + using_key_cols + core_cols + combined_cols + per_method_score_cols + per_method_match_cols))
-    merged = merged[keep_cols]
-
-    return merged
+    
+    # Create a simplified output with only essential columns
+    # Get the key columns from both datasets
+    master_key_cols = [f"{key}" for key in keys]
+    using_key_cols = [f"using_{key}" for key in keys]
+    
+    # Select only the essential columns for display
+    essential_cols = master_key_cols + using_key_cols
+    
+    # Add method-specific score and match columns
+    for m in selected_methods:
+        essential_cols.extend([f"{m}_score", f"{m}_match"])
+    
+    # Filter to only include columns that exist in the merged dataframe
+    display_cols = [col for col in essential_cols if col in merged.columns]
+    
+    return merged[display_cols]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Streamlit app interface (Sidebar with method grouping & comparison strategy)
+# Streamlit app interface
 # ─────────────────────────────────────────────────────────────────────────────
+METHOD_HELP = {
+    # Edit-distance
+    "rapidfuzz": "Fast general matcher; good for short messy strings where word order may vary.",
+    "textdistance": "Jaro–Winkler: tolerant to minor typos; strong for person/org names.",
+    "levenshtein": "Counts insertions/deletions/substitutions; best for short IDs/codes.",
+    "damerau_levenshtein": "Like Levenshtein + transpositions; handles adjacent letter swaps.",
+    # Token-based
+    "jaccard_tokens": "Word-set overlap; use when same words appear in different orders.",
+    "trigram_overlap": "Character 3-gram overlap; robust to truncation/partial matches.",
+    "tfidf_cosine": "Vector-space similarity; better for longer strings/descriptions.",
+    # Phonetic
+    "soundex": "Pronunciation matching for English names; handles spelling variants.",
+    "double_metaphone": "Improved phonetic matching (primary/secondary); names/brands.",
+    "name_matching": "Blends phonetic and typo metrics; tailored for names/entities.",
+    # Semantic
+    "sentence_transformers": "Context-aware embeddings; for long text where meaning matters.",
+    # Record-linkage
+    "recordlinkage": "Field-wise statistical linkage; best for structured multi-column data.",
+}
+
+CATEGORY_TIPS = {
+    "Edit-distance": "Good for short strings, IDs, and names with small typos or transpositions.",
+    "Token-based": "Useful when word order changes or for partial/substring overlaps.",
+    "Phonetic": "Best when spelling varies but pronunciation is similar (names/brands).",
+    "Semantic": "For long descriptions where contextual meaning drives similarity.",
+    "Record-linkage": "For multi-field entity resolution across structured datasets.",
+}
+
 with st.sidebar:
     st.header("Upload Files")
     master_file = st.file_uploader("Upload MASTER file", type=["csv", "xlsx", "xls", "dta"])
@@ -504,7 +534,7 @@ with st.sidebar:
                     key=f"ms_{cat}",
                     help=CATEGORY_TIPS.get(cat, "")
                 )
-                # inline cheat sheet
+                # Show one-line help for each method in this category
                 with st.container():
                     st.markdown("<small><b>Cheat sheet</b></small>", unsafe_allow_html=True)
                     for k in items.keys():
@@ -515,34 +545,20 @@ with st.sidebar:
     ordered_all = [k for cat in CATEGORIES.values() for k in cat.keys()]
     selected_methods = [m for m in ordered_all if m in set(selected_methods)]
 
+    # Optional deps notice
     if _missing:
         with st.expander("Missing/optional dependencies", expanded=False):
             for k, msg in _missing.items():
                 st.caption(f"• `{k}` not available: {msg}")
 
-    st.divider()
-    st.subheader("Comparison Strategy")
-    comparison_mode = st.radio(
-        "How should best match be determined?",
-        options=[
-            "Raw scores (current)",
-            "Normalize scores before comparison",
-            "Hybrid/Ensemble (average rank)"
-        ],
-        index=0
-    )
+    # Global quick reference (collapsible)
+    with st.expander("Method cheat sheet (all)", expanded=False):
+        for cat, items in CATEGORIES.items():
+            st.markdown(f"**{cat}** — {CATEGORY_TIPS.get(cat, '')}")
+            for k, label in items.items():
+                st.caption(f"• **{label}** — {METHOD_HELP.get(k, '')}")
+            st.write("")
 
-    show_normalised = False
-    if comparison_mode == "Normalize scores before comparison":
-        show_normalised = st.checkbox(
-            "Display normalised scores instead of raw scores",
-            value=False,
-            help="Per-method score columns will display normalised 0–100 values if checked."
-        )
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Main panel
-# ─────────────────────────────────────────────────────────────────────────────
 if master_file and using_file:
     try:
         master_df = _read_file(master_file)
@@ -556,21 +572,7 @@ if master_file and using_file:
 
         if selected_keys and selected_methods:
             if st.button("Run Fuzzy Match", type="primary"):
-                matched = fuzzy_match(
-                    master_df, using_df, selected_keys,
-                    selected_methods, comparison_mode, show_normalised
-                )
-
-                # Legend above results
-                score_view = "normalised (0–100)" if (comparison_mode == "Normalize scores before comparison" and show_normalised) else "raw"
-                st.markdown(
-                    f"<small><i>Legend:</i> Best-match strategy = <b>{comparison_mode}</b>; "
-                    f"per-method results shown as <b>&lt;matched name&gt; (score)</b> in *_result columns. "
-                    f"Per-method *_score and *_match are also included. "
-                    f"Overall best match name is in <b>best_match_name</b>.</small>",
-                    unsafe_allow_html=True
-                )
-
+                matched = fuzzy_match(master_df, using_df, selected_keys, selected_methods)
                 st.success("Fuzzy matching complete.")
                 st.dataframe(matched.head(100), use_container_width=True)
 
