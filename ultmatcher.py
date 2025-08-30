@@ -216,7 +216,7 @@ def _best_match_name_matching(i: int, master_keys: pd.Series, using_keys: pd.Ser
         return pd.NA, 0.0, "name_matching"
     best = matches.iloc[0]
 
-    # ---- FIX: robustly extract similarity regardless of column name ----
+    # Robust similarity extraction
     sim_col = None
     for candidate in ("similarity", "similarity_score", "score", "ratio", "confidence"):
         if candidate in matches.columns:
@@ -225,7 +225,6 @@ def _best_match_name_matching(i: int, master_keys: pd.Series, using_keys: pd.Ser
     sim_val = float(best[sim_col]) if sim_col else 0.0
     if sim_val <= 1.0:
         sim_val *= 100.0
-    # -------------------------------------------------------------------
 
     return best.get("match_index", pd.NA), float(sim_val), "name_matching"
 
@@ -441,6 +440,16 @@ def fuzzy_match(
     merged = merged.merge(
         using_df.add_prefix("using_"), left_on="using_index", right_index=True, how="left"
     )
+
+    # ───── FIX REQUEST: only show the matching variables plus scores/methods ─────
+    per_method_cols = [c for c in merged.columns if c.endswith("_score")]
+    core_cols = ["using_index", "best_score", "method"]
+    master_key_cols = keys
+    using_key_cols = [f"using_{k}" for k in keys if f"using_{k}" in merged.columns]
+    keep_cols = list(dict.fromkeys(master_key_cols + using_key_cols + core_cols + per_method_cols))
+    merged = merged[keep_cols]
+    # ────────────────────────────────────────────────────────────────────────────
+
     return merged
 
 # ─────────────────────────────────────────────────────────────────────────────
