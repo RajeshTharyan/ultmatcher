@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from pathlib import Path
-from typing import List, Dict, Tuple, Callable, , Optional, Any
+from typing import List, Dict, Tuple, Callable, Optional, Any
 from dataclasses import dataclass
 from rapidfuzz import fuzz, process
 import textdistance
