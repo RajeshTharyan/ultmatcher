@@ -1,6 +1,6 @@
-streamlit>=1.39,<2
+streamlit>=1.52,<2
 pandas>=2.2,<3
-numpy>=2.0,<3        
+numpy>=2.0,<3
 scikit-learn>=1.6
 rapidfuzz>=3.6
 textdistance>=4.6
@@ -8,7 +8,8 @@ recordlinkage==0.16.0
 name-matching>=0.8.12
 sentence-transformers>=2.7
 transformers>=4.55
-torch>=2.4     
+torch>=2.4
 phonetics==1.0.5
 jellyfish>=1.0
-scipy>=1.15  
+scipy>=1.15
+openpyxl>=3.1 
