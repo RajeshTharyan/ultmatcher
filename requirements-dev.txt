@@ -1,0 +1,11 @@
+# Test and local-dev extras. Does not install torch / sentence-transformers;
+# those are only needed for the optional MiniLM method in the running app.
+pytest>=8.0,<9
+pandas>=2.2,<3
+numpy>=2.0,<3
+scikit-learn>=1.6
+rapidfuzz>=3.6
+textdistance>=4.6
+phonetics==1.0.5
+jellyfish>=1.0
+openpyxl>=3.1
